@@ -6,12 +6,13 @@ Claude Code 自定义 Skill 集合，按用途分类管理。
 
 ```
 skill_total/
-├── frontend/                  # 前端 / UI 相关 Skill
-│   └── visual-html-tutorial/  # 面向客户的可视化 HTML 教程生成器
-├── content/                   # 内容生产 / 媒体转换 Skill
-│   └── bili-series-to-ppt/    # Bilibili 多 P 系列 → 教学 PPT 课件流水线
-├── backend/                   # 后端相关 Skill（待添加）
-├── devops/                    # DevOps 相关 Skill（待添加）
+├── frontend/                       # 前端 / UI 相关 Skill
+│   ├── visual-html-tutorial/       # 面向客户的可视化 HTML 教程生成器
+│   └── single-file-courseware/     # MD 笔记 → 双击即看的单文件教学课件（含 quiz + 打印）
+├── content/                        # 内容生产 / 媒体转换 Skill
+│   └── bili-series-to-ppt/         # Bilibili 多 P 系列 → 教学 PPT 课件流水线
+├── backend/                        # 后端相关 Skill（待添加）
+├── devops/                         # DevOps 相关 Skill（待添加）
 └── README.md
 ```
 
@@ -42,6 +43,7 @@ cp -r content/bili-series-to-ppt ~/.claude/skills/
 | Skill | 分类 | 形态 | 说明 |
 |-------|------|------|------|
 | [visual-html-tutorial](frontend/visual-html-tutorial/) | frontend | slash command | 根据素材生成面向客户的高度可视化单文件 HTML 教程，含 Dark/Light 主题、交互式模拟演示、多系统 Tab 等 |
+| [single-file-courseware](frontend/single-file-courseware/) | frontend | 全局 skill | 把 markdown 笔记/cheat sheet 变成学生双击即看的单文件 HTML 教学课件，带 Tabs、多语例句、模拟测试题（localStorage 记最佳成绩）、一键打印为 PDF；含 12 维交叉自检表 |
 | [bili-series-to-ppt](content/bili-series-to-ppt/) | content | 全局 skill | Bilibili 多 P 系列端到端流水线：抓 URL → 下载 → Whisper 转写 → 4 路并发 subagent 抽大纲 → 渲染 22-26 张/讲的教学 PPT |
 
 ## 分类说明
