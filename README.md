@@ -11,6 +11,8 @@ skill_total/
 │   └── single-file-courseware/     # MD 笔记 → 双击即看的单文件教学课件（含 quiz + 打印）
 ├── content/                        # 内容生产 / 媒体转换 Skill
 │   └── bili-series-to-ppt/         # Bilibili 多 P 系列 → 教学 PPT 课件流水线
+├── data-viz/                       # 数据分析 / 学术可视化交付 Skill
+│   └── bert-sentiment-viz-deliverable/   # BERT 情感分类语料 → A3 主 Dashboard + N 张精修图 + 设计说明 + 论文对标 + UTF-8 zip 交付包（含唐诗实例 reference 双层结构）
 ├── backend/                        # 后端相关 Skill（待添加）
 ├── devops/                         # DevOps 相关 Skill（待添加）
 └── README.md
@@ -28,15 +30,16 @@ cp frontend/visual-html-tutorial/visual-html-tutorial.md <你的项目>/.claude/
 
 然后在 Claude Code 中输入 `/project:visual-html-tutorial` 调用。
 
-### 2. 全局 Skill 目录（如 `content/bili-series-to-ppt`）
+### 2. 全局 Skill 目录（如 `content/bili-series-to-ppt`、`data-viz/bert-sentiment-viz-deliverable`）
 
-含 `SKILL.md` + `templates/` + `references/`，整体复制到全局 skills 目录：
+含 `SKILL.md` + 支撑文档（templates / references / 实例 reference 子目录等），整体复制到全局 skills 目录：
 
 ```bash
 cp -r content/bili-series-to-ppt ~/.claude/skills/
+cp -r data-viz/bert-sentiment-viz-deliverable ~/.claude/skills/
 ```
 
-之后用自然语言说出触发短语（见各 skill README 的「触发短语」章节）即可由 Claude Code 自动加载执行。
+之后用自然语言说出触发短语（见各 skill SKILL.md 的 description 字段或 README 的「触发短语」章节）即可由 Claude Code 自动加载执行。
 
 ## Skill 列表
 
@@ -45,11 +48,13 @@ cp -r content/bili-series-to-ppt ~/.claude/skills/
 | [visual-html-tutorial](frontend/visual-html-tutorial/) | frontend | slash command | 根据素材生成面向客户的高度可视化单文件 HTML 教程，含 Dark/Light 主题、交互式模拟演示、多系统 Tab 等 |
 | [single-file-courseware](frontend/single-file-courseware/) | frontend | 全局 skill | 把 markdown 笔记/cheat sheet 变成学生双击即看的单文件 HTML 教学课件，带 Tabs、多语例句、模拟测试题（localStorage 记最佳成绩）、一键打印为 PDF；含 12 维交叉自检表 |
 | [bili-series-to-ppt](content/bili-series-to-ppt/) | content | 全局 skill | Bilibili 多 P 系列端到端流水线：抓 URL → 下载 → Whisper 转写 → 4 路并发 subagent 抽大纲 → 渲染 22-26 张/讲的教学 PPT |
+| [bert-sentiment-viz-deliverable](data-viz/bert-sentiment-viz-deliverable/) | data-viz | 全局 skill | BERT 情感分类语料端到端可视化交付包：6 阶段流程（源材料阅读 → core/ 五模块架构 → 设计说明+对照参考文献 → A3 主 Dashboard → N 张精修图 → 测试视检 → UTF-8 zip 打包）；双层结构（通法骨架 + 唐诗作业实例 reference）；含色板/字体/colormap 视觉规范、双向锚点验证、跨平台中文文件名解决方案 |
 
 ## 分类说明
 
 - **frontend**：前端可视化、HTML/CSS/JS 生成、客户端 UI 类
 - **content**：内容生产与媒体转换流水线（视频→文本→课件、音频处理、文档批量生成等）
+- **data-viz**：数据分析 / 学术可视化交付包（BERT/NLP 情感分析、统计图表、Dashboard + 多图组合、论文方法对标、设计说明等）
 - **backend**：服务端、API、数据库、后台任务（待添加）
 - **devops**：CI/CD、部署、监控、基础设施（待添加）
 
