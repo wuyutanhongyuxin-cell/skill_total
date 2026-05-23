@@ -1,0 +1,274 @@
+# 论文事实核查清单
+
+> 适用：中文 LaTeX 学术论文初稿 → 终稿任意阶段。每次重大修订或定稿前过一遍。
+> 两条触发线：(a) 写完一段含具体数字/方法学说法的段落；(b) 编译出 PDF 准备发给老师/审稿人之前。
+>
+> 配套 skill：[[chinese-academic-paper-rigor]] · 配套工具：`tools/{number_audit,humanize_check,punct_audit,pdf_reverse_verify}.py`
+
+---
+
+## 1. 数字真值核查（机器化）
+
+工具：`tools/number_audit.py`
+
+每条 truth 必须：(a) 出现在论文正文；(b) 与一次可独立复现的来源对齐。
+
+### 1.1 数据集规模（联网核对官方源）
+
+| 数据集 | 论文写法 | 必查的官方源 |
+|---|---|---|
+| 例：BCC 总规模 | 150 亿字（六大子库总和） | corpus.bfsu.edu.cn/info/1070/1475.htm |
+| 例：BCC 原始词数 | 1,818,649 | `data/raw/global_wordfreq.release.txt` 行数 |
+| 例：Xu & Li 词典规模 | 9,877 词 | PLOS ONE doi:10.1371/journal.pone.0232133 摘要 |
+| ... | ... | ... |
+
+**核查方法**：每次改动论文中任何"约 X 亿"/"X 万词"/"X 千词"数字时：
+1. `subagent` 派联网取证（"核对 BCC 官方主页规模"）→ 拿回 verbatim 引用 + URL
+2. 改 `number_audit.py` TRUTH 字典对应条目（含 LaTeX 千分位变体 `1{,}818{,}649`）
+3. 跑 `python tools/number_audit.py`，期望 100% PASS
+
+### 1.2 统计真值（已编入 number_audit.py）
+
+| 项 | 真值 | 来源 |
+|---|---|---|
+| 例：ANOVA pos p | 0.7287 | `output/balance_report.txt` |
+| 例：Levene p | 0.1361 | `output/balance_report.txt` |
+| ... | ... | ... |
+
+---
+
+## 2. 引用文献核查
+
+`references.bib` 每条至少核：(a) 作者拼写与顺序；(b) 年份；(c) 刊名/会议名；(d) 卷号/页码；(e) DOI 真实存在（如有）。
+
+### 已核证真实条目
+
+- ✅ ...（每条占一行）
+
+### 占位文献（不能直接编进 PDF）
+
+- ⛔ `TODO_ref*` 占位 — **编译前 grep 一遍剔除或补真**
+
+**核查方法**：每次 `\cite{}` 新文献：
+1. `grep -n "<key>" src/references.bib` 验在 bib
+2. WebSearch 验证存在
+3. WebFetch DOI 验可访问（doi.org 跳转到出版商页面）
+
+---
+
+## 3. 方法学说法措辞核查（避免暗示不存在的先例 — [[L-046]]）
+
+凡论文出现下列措辞，必须当场判定有无 published 文献先例：
+
+| 措辞 | 判定 | 改法 |
+|---|---|---|
+| "通常要求 X" | 有先例？引文；无 → "本研究为 Y，将 X 定为 …" |
+| "工程实践中 X" | 同上 |
+| "普遍接受 X" / "学界共识" | 同上 |
+| "一般取 X" | 同上 |
+| "常用阈值 X" | 同上 |
+| "标准做法是 X" | 同上 |
+
+**本项目当前已知阈值归因**（在此填写）：
+
+- 例：ANOVA p > 0.10 → 王老师 hard constraint，论文表述为 **"本研究为降低 II 类错误风险，将平衡性阈值定为 p > 0.10"**（不是先例）
+- 例：4 cell mean log10 极差 < 0.3 → 工程平衡目标（候选池可达性验证后给出），论文不主张先例
+- ...
+
+---
+
+## 4. 硬约束 + 让步双向文档化检查（[[L-047]]）
+
+本论文当前的硬约束 + 让步组合（在此填写）：
+
+### 4.1 "<硬约束声明>"硬约束 vs <让步> 例外
+
+- **硬约束声明位置**：摘要中文 / 摘要英文 / §X.Y / §Z.W
+- **让步声明位置**：§W.V
+- **例外内容**：...（数量 + 占比 + 不可替代理由）
+- **selfcheck 思路**：grep 硬约束关键词所有命中位置 → 每个位置周围 200 字符内必须出现："例外" 或 `\ref{<例外详述label>}` 或占比数字
+
+---
+
+## 5. 致谢段 LLM 痕迹核查（[[feedback-acknowledgments-no-fabrication]]）
+
+论文致谢段**只感谢真实发生的指导/帮助**，不写：
+
+- "感谢匿名审稿人对初稿的建设性意见" — 未投稿不存在审稿人
+- "感谢上海交通大学 XX 项目提供数据资源与计算环境支持" — 没有这种项目就别写
+- "其对 XX 的方法论提示" — 空泛溢美
+- "本研究受 XX 基金资助（项目号 …）" — 没有就别写
+
+**核查方法**：致谢段每句问"实际有谁帮过/指导过/提供过资源"，名实不符的删。
+
+**类似虚构高危区**：§项目背景的"提供数据资源" / 参考文献的占位 `TODO_ref*` 编进 PDF / 署名后的"通讯作者"角色凭空标。
+
+---
+
+## 6. 编译 + selfcheck 流水线
+
+每次终稿编译前：
+
+```powershell
+cd <project-root>
+
+# 1. 数字真值（必 PASS）
+python tools/number_audit.py
+
+# 2. LaTeX 源 7 项 humanize selfcheck（必 PASS）
+python tools/humanize_check.py
+
+# 3. 标点字符级（必 PASS）
+python tools/punct_audit.py
+
+# 4. 编译
+pwsh tools/compile.ps1
+# 输出 out/paper.pdf, 检查警告 ≤ 1 (允许 'h→ht' 无害浮动提示)
+
+# 5. PDF 反推验证（必 PASS）
+python tools/pdf_reverse_verify.py
+```
+
+PDF 出来后，若怀疑有 LLM 痕迹（emoji / 中英混排半角括号 / AI 高频词），用 `chinese-docx-humanize` 的 selfcheck 把 PDF 提取的纯文本逆向核：
+
+```powershell
+pdftotext -layout out/paper.pdf out/paper.txt
+python C:\Users\16191\.claude\skills\chinese-docx-humanize\selfcheck.py out/paper.txt
+```
+
+预期：0 emoji / 0 框线 / 0 AI 高频词 / 0 半角括号含中文 / 0 箭头残留 / 0 中文段半角逗号。
+
+---
+
+## 7. 联网交叉验证 SOP
+
+派 `general-purpose` subagent 验证外部事实时：
+
+1. **要求 verbatim 引用 + 真实可访问 URL**（不要 AI 转述，[[L-033]]）
+2. **每条断言至少 2 个独立源** 交叉
+3. **subagent 报告"找不到先例"是有效结论**，不是失败 — 此时归因到本研究自定（[[L-046]]）
+4. **subagent 给出的人名/机构/邮箱** 必须 WebFetch 单独验证（一手主页）才能写进论文
+5. **JSON 数组类查询走本地** `curl + jq/Python json.load`，不走 WebFetch（[[L-033]]）
+
+模板 prompt：
+
+> 核对论文 §X line YY 的说法 "Z"。
+>
+> 要求：
+> 1. 找 ≥ 2 个独立的 published 来源（论文 / 官方网站 / 政府文件）
+> 2. 每个来源给 verbatim 引用 + URL + 访问日期
+> 3. 如果找不到先例，明说"找不到先例"+ 列出搜过的 keyword
+> 4. 不要 AI 转述，引用必须可复现
+> 5. 不要 GitHub Contents API 这类 JSON 数组的"完整列表"查询，改 `curl` 取原始 JSON 后本地解析
+>
+> 报告 < 300 字。
+
+---
+
+## 8. 历史踩坑速查
+
+| 编号 | 教训 |
+|---|---|
+| L-045 | 硬数字不能凭记忆（BCC 18 亿 → 实际 150 亿） |
+| L-046 | "通常要求" 暗示不存在的先例 |
+| L-047 | 硬约束 + 让步必须双向文档化 |
+| L-048 | LaTeX 源 ASCII `"` 在 ctex+宋体下渲染都成关引号，肉眼检不出 |
+| L-042 | docx 反推必须用 docx 真实源 txt，不是同名 md |
+| L-033 | WebFetch JSON 数组转述有幻觉，本地 jq/Python 解析 |
+| L-029 | 千分位数字被全角化（PUNCT_FIX 无差别替换） |
+| feedback-acknowledgments-no-fabrication | 致谢段不写不存在的审稿人/项目/方法论提示 |
+| feedback-no-overwrite-source | 派生加工不覆盖源 xlsx/docx/csv |
+
+---
+
+## 9. 标点字符级核查（[[L-048]]）
+
+**问题本质**：LaTeX 源里直接敲的 ASCII 标点在 xelatex+ctex+宋体下编译后字形被映射成"看起来像"中文标点，**肉眼检不出**配对错误。`number_audit.py` 只比数字真值，`chinese-docx-humanize/selfcheck.py` 只检 docx 段落里的中文段半角逗号，**LaTeX 源标点是盲区**。`punct_audit.py` 是这层的专门工具。
+
+### 9.1 禁用字符黑名单（中文段内）
+
+中文字符 `[一-鿿]` 前后 1 字符窗口内**不应**出现以下 ASCII 标点：
+
+| 字符 | 编码 | 正确替代 | 例外 |
+|---|---|---|---|
+| `"` | U+0022 | `"` (U+201C) 开 / `"` (U+201D) 关 按出现顺序奇偶交替 | 无（LaTeX 命令参数除外） |
+| `'` | U+0027 | `'` (U+2018) 开 / `'` (U+2019) 关 | 英文缩写 `Levene's` / `team's` / `Li's` |
+| `「` | U+300C | `"` (U+201C) | 无（日文括弧不规范） |
+| `」` | U+300D | `"` (U+201D) | 无 |
+| `,` | U+002C | `，` (U+FF0C) | 千分位数字 `1,818,649` 保留（[[L-029]]） |
+| `;` | U+003B | `；` (U+FF1B) | 无 |
+| `:` | U+003A | `：` (U+FF1A) | URL / 时间戳 / LaTeX 字段名 `\label{xxx:yyy}` |
+| `.` | U+002E | `。` (U+3002) 句末；保留 数字小数点 | 小数 `0.7287` / 缩写 `Xu \& Li (2020)` |
+
+### 9.2 引号配对替换算法（一次性全文修订）
+
+```python
+from pathlib import Path
+p = Path('src/paper.tex')
+text = p.read_text(encoding='utf-8')
+Path('src/paper.tex.before-quote-fix').write_text(text, encoding='utf-8')
+
+LDQ, RDQ = '“', '”'   # U+201C / U+201D
+text = text.replace('「', LDQ).replace('」', RDQ)
+out, toggle = [], 0
+for c in text:
+    if c == '"':
+        out.append(LDQ if toggle == 0 else RDQ)
+        toggle ^= 1
+    else:
+        out.append(c)
+assert toggle == 0, "ASCII \" 数为奇数，配对失败"
+new_text = ''.join(out)
+assert new_text.count('"') == 0
+assert new_text.count('“') == new_text.count('”')
+p.write_text(new_text, encoding='utf-8')
+```
+
+### 9.3 反推验证（PDF 文本流）
+
+```powershell
+pdftotext -layout out/paper.pdf out/paper.txt
+python -c "from pathlib import Path; t = Path(r'out/paper.txt').read_text(encoding='utf-8'); print('ASCII \"残留:', t.count(chr(0x22)), '（期望 0）'); print('「残留:', t.count('「'), '」残留:', t.count('」')); print('左右平衡:', t.count('“') == t.count('”'))"
+```
+
+所有项必须 0 / True。
+
+### 9.4 整合到 compile pre-flight
+
+`punct_audit.py` 已实施 7 项检查（P1-P7 + D1/D2 诊断），可在 `compile.ps1` 编译前作 pre-flight，非零退出则不编译：
+
+```powershell
+python tools/punct_audit.py
+if ($LASTEXITCODE -ne 0) { throw "标点核查 FAIL，不编译" }
+# ... 之后才跑 xelatex
+```
+
+类似的"肉眼盲区"字符问题（全角空格 U+3000 / 不间断空格 U+00A0 / 横线变体 — vs - vs – / 千分位逗号 vs 中文逗号）统一在 `punct_audit` 一处收口。
+
+---
+
+## 10. 用户硬约束记忆（项目级 — 来自 feedback memory）
+
+- **不要在源文件上改 新出一个文件**（限 xlsx/docx/csv；`paper.tex` 是源代码 in-place 允许）
+- **不要体现一点 LLM 做的工作**（论文正文 + 致谢 + 注释 + commit message 都不能出现 LLM 元词）
+- **一定要严格准确 符合论文规范**
+- **作者署名仅"<本项目署名>"**（不个人姓名）
+- ...（在此追加本项目专属硬约束）
+
+---
+
+## 11. 终交付前最后一遍
+
+按顺序：
+
+- [ ] `python tools/number_audit.py` → N/N PASS
+- [ ] `python tools/humanize_check.py` → 7/7 OK
+- [ ] `python tools/punct_audit.py` → 7/7 PASS
+- [ ] `pwsh tools/compile.ps1` → out/paper.pdf 写出，警告 ≤ 1
+- [ ] `python tools/pdf_reverse_verify.py` → 字符级 + 数字真值 + chinese-docx-humanize 三阶段全 PASS
+- [ ] 抽 3-5 对中文引号样本肉眼复核字形
+- [ ] 致谢段逐句问"实际有谁做过这件事"
+- [ ] `grep -n "TODO_ref" src/references.bib` → 0 命中
+- [ ] PDF 页码、目录、交叉引用收敛（最后两次 xelatex 输出无 "Rerun to get cross-references right"）
+
+全过 → 交付。任一项 FAIL → 修源 + 重编 + 重推，不修报告。

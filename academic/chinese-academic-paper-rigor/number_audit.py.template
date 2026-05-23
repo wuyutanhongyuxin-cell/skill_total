@@ -1,0 +1,122 @@
+"""
+number_audit.py —— 数字真值审计
+
+把 TRUTH 字典中所有数字与 paper.tex 正文逐项 diff。
+正文必须 100% 包含每个真值（任一变体命中即算 OK）。
+
+使用：
+  1. 修改下方 TRUTH 字典，填入本项目的真值（数据集规模、统计 p 值、覆盖率…）
+  2. 每条真值列出在论文里可能出现的所有变体形式：
+     - 原始数字 "1818649"
+     - 千分位 "1,818,649"
+     - LaTeX 保护千分位 "1{,}818{,}649"（biblatex 防断行用）
+  3. 跑 `python tools/number_audit.py`
+  4. MISS 项必须改源到 100% 命中再交付
+
+调用方式：
+  python tools/number_audit.py          # 默认审计 src/paper.tex
+  python tools/number_audit.py --pdf    # 改读 out/paper.txt（pdftotext 反推后用）
+
+退出码 0 = 全部命中；1 = 有 MISS。
+"""
+import re
+import sys
+import argparse
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TEX_DEFAULT = PROJECT_ROOT / "src" / "paper.tex"
+TXT_DEFAULT = PROJECT_ROOT / "out" / "paper.txt"
+
+# ============================================================
+# 真值表 —— 在这里填本项目所有需审计的数字
+# 每条 key 是人类可读名称（用于报告），value 是该数字在论文里所有可能出现的变体列表
+# 任一变体命中即算 OK
+# ============================================================
+
+TRUTH = {
+    # 数据集规模 —— 写入前用 subagent 联网核对官方一手源（L-045）
+    # 例：BCC 总规模 150 亿字，由 6 个子库构成
+    # "BCC 总规模": ["150 亿", "150亿"],
+    # "BCC 原始词数": ["1,818,649", "1818649", "1{,}818{,}649"],
+    # "BCC 清洗后": ["447,823", "447823", "447{,}823"],
+
+    # 统计真值 —— 来自 balance_report.txt / sets_report.txt / selection_report.txt
+    # "初始候选池": ["511"],
+    # "频率均衡扩充后候选池": ["626"],
+    # "最终候选池规模": ["838"],
+    # "ANOVA pos p": ["0.7287"],
+    # "ANOVA concreteness p": ["0.4822"],
+    # "ANOVA 交互 p": ["0.9985"],
+    # "Levene p": ["0.1361"],
+
+    # 覆盖率
+    # "AoA 覆盖率": ["85.0", "340/400"],
+    # "SUBTLEX-CH 覆盖率": ["92.2", "369/400"],
+    # "HSK 覆盖率": ["66.8", "267/400"],
+
+    # 引用规模 —— WebSearch 引用对应论文摘要核对
+    # "Xu & Li 词典规模": ["9{,}877", "9877", "9,877"],
+    # "Brysbaert 词典规模": ["40,000", "40000", "40{,}000", "约 40,000"],
+
+    # 算法参数
+    # "SA 迭代数": ["12{,}000", "12000", "12,000"],
+}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pdf", action="store_true",
+                    help="审计 PDF 反推的 out/paper.txt（默认审计 src/paper.tex）")
+    ap.add_argument("--source", type=Path, default=None,
+                    help="自定源文件路径")
+    args = ap.parse_args()
+
+    if args.source:
+        src = args.source
+    elif args.pdf:
+        src = TXT_DEFAULT
+    else:
+        src = TEX_DEFAULT
+
+    if not src.exists():
+        print(f"[ERROR] 源文件不存在: {src}")
+        sys.exit(2)
+
+    text = src.read_text(encoding="utf-8")
+
+    # tex 模式去注释；txt 模式（pdftotext 输出）不去
+    if src.suffix == ".tex":
+        body = "\n".join(
+            re.sub(r"(?<!\\)%.*$", "", line)
+            for line in text.splitlines()
+        )
+    else:
+        body = text
+
+    print(f"[number_audit] 源: {src}")
+    print(f"[size] {len(body)} chars")
+    print()
+
+    if not TRUTH:
+        print("[WARN] TRUTH 字典为空 —— 请编辑 number_audit.py 填入本项目真值")
+        sys.exit(2)
+
+    missing = []
+    for name, candidates in TRUTH.items():
+        hit = any(c in body for c in candidates)
+        status = "OK" if hit else "MISS"
+        print(f"[{status:4}] {name:35} 候选: {candidates}")
+        if not hit:
+            missing.append(name)
+
+    print()
+    print(f"=== {len(TRUTH) - len(missing)}/{len(TRUTH)} 命中 ===")
+    if missing:
+        print("MISSING:", missing)
+        sys.exit(1)
+    print("[PASS] 数字真值反推 100% 命中")
+
+
+if __name__ == "__main__":
+    main()

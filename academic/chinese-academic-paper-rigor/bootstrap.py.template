@@ -1,0 +1,239 @@
+"""
+bootstrap.py —— 项目初始化辅助（L1 确定性，不调 LLM）
+
+完成两件事：
+
+  Stage A. 探测本机 xelatex.exe / biber.exe → 改写 compile.ps1 的路径变量
+           默认 dry-run 打印 diff；--apply 才落盘（备份到 .ps1.bak）
+
+  Stage B. 扫 paper.tex 抽数字 token → 生成 truth_skeleton.md 待人工核证清单
+           **不直接覆盖 number_audit.py**：TRUTH 字典是审计依据，每条数字
+           必须人工核证真值来源（论文 verbatim / 官方统计 / 本地脚本可复现）
+           后并入。
+
+使用：
+
+  python tools/bootstrap.py                       # dry-run，只打印
+  python tools/bootstrap.py --apply               # 应用 compile.ps1 路径改写
+  python tools/bootstrap.py --extract             # 抽 paper.tex 生成 skeleton
+  python tools/bootstrap.py --all                 # = --apply --extract
+
+退出码：0 = 成功；1 = 探测失败/有警告；2 = 用法错误
+
+**L2 协议**（subagent 辅助真值对齐）：见 SKILL.md。本脚本只做 L1 确定性工作，
+LLM 输出不进入审计闭环（L-033）。
+"""
+import argparse
+import re
+import shutil
+import sys
+from pathlib import Path
+from typing import Optional, List, Dict, Set, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+COMPILE_PS1 = PROJECT_ROOT / "tools" / "compile.ps1"
+PAPER_TEX = PROJECT_ROOT / "src" / "paper.tex"
+TRUTH_SKELETON_OUT = PROJECT_ROOT / "tools" / "truth_skeleton.md"
+
+
+# ============================================================
+# Stage A: xelatex / biber 路径探测
+# ============================================================
+
+def candidate_exe_paths(exe: str) -> List[Path]:
+    """常见 Windows TeX 安装路径，按优先级排序。"""
+    return [
+        # MiKTeX 用户级
+        Path.home() / "AppData/Local/Programs/MiKTeX/miktex/bin/x64" / exe,
+        # MiKTeX 全机
+        Path("C:/Program Files/MiKTeX/miktex/bin/x64") / exe,
+        Path("C:/Program Files (x86)/MiKTeX/miktex/bin/x64") / exe,
+        # TeX Live（按年份从近到远）
+        Path("C:/texlive/2026/bin/windows") / exe,
+        Path("C:/texlive/2025/bin/windows") / exe,
+        Path("C:/texlive/2024/bin/windows") / exe,
+        Path("C:/texlive/2023/bin/windows") / exe,
+    ]
+
+
+def detect_exe(name: str) -> Optional[str]:
+    """先 PATH 后常见路径。返回绝对路径或 None。"""
+    found = shutil.which(name)
+    if found:
+        return found
+    exe_name = name if name.endswith(".exe") else name + ".exe"
+    for c in candidate_exe_paths(exe_name):
+        if c.exists():
+            return str(c)
+    return None
+
+
+def stage_a_detect_paths(apply: bool) -> int:
+    print("=" * 60)
+    print("Stage A · 探测 xelatex / biber 路径")
+    print("=" * 60)
+
+    xelatex = detect_exe("xelatex")
+    biber = detect_exe("biber")
+
+    if not xelatex:
+        print("[FAIL] 未找到 xelatex.exe（PATH 与常见安装路径都没有）")
+        print("       安装 MiKTeX: https://miktex.org/download")
+        print("       或 TeX Live: https://tug.org/texlive/")
+        return 1
+    if not biber:
+        print("[FAIL] 未找到 biber.exe（一般随 MiKTeX/TeX Live 自带）")
+        return 1
+
+    print(f"[ OK ] xelatex: {xelatex}")
+    print(f"[ OK ] biber:   {biber}")
+
+    if not COMPILE_PS1.exists():
+        print(f"[SKIP] {COMPILE_PS1} 不存在（先从 skill 模板拷贝 compile.ps1.template）")
+        return 0
+
+    text = COMPILE_PS1.read_text(encoding="utf-8")
+    new_text = re.sub(
+        r"(\$XeLaTeX\s*=\s*)'[^']*'",
+        lambda m: m.group(1) + "'" + xelatex.replace("'", "''") + "'",
+        text,
+    )
+    new_text = re.sub(
+        r"(\$Biber\s*=\s*)'[^']*'",
+        lambda m: m.group(1) + "'" + biber.replace("'", "''") + "'",
+        new_text,
+    )
+
+    if new_text == text:
+        print("[INFO] compile.ps1 路径变量已与探测值一致，无需改写")
+        return 0
+
+    print()
+    print("--- 建议改写 ---")
+    for old_line, new_line in zip(text.splitlines(), new_text.splitlines()):
+        if old_line != new_line:
+            print(f"- {old_line}")
+            print(f"+ {new_line}")
+    print()
+
+    if apply:
+        backup = COMPILE_PS1.with_suffix(".ps1.bak")
+        backup.write_text(text, encoding="utf-8")
+        COMPILE_PS1.write_text(new_text, encoding="utf-8")
+        print(f"[APPLIED] compile.ps1 已改写（备份 {backup.name}）")
+    else:
+        print("[DRY-RUN] 加 --apply 落盘")
+    return 0
+
+
+# ============================================================
+# Stage B: paper.tex 数字 token 抽取 → truth_skeleton.md
+# ============================================================
+
+TOKEN_PATTERNS: List[Tuple[str, str]] = [
+    ("R1_千分位整数", r"\d{1,3}(?:,\d{3})+|\d{1,3}(?:\{,\}\d{3})+"),
+    ("R2_大整数",     r"(?<!\d)\d{4,}(?!\d)"),
+    ("R3_小数",       r"(?<!\d)0\.\d{2,}"),
+    ("R4_百分比",     r"\d+(?:\.\d+)?\s*\\?%"),
+    ("R5_比率",       r"\d{1,4}/\d{1,4}"),
+    ("R6_p值表达式",  r"p\s*[<>=]\s*(?:0?\.\d+|\d+(?:\.\d+)?)"),
+]
+
+YEAR_RE = re.compile(r"^(?:19|20|21)\d{2}$")
+
+
+def stage_b_extract_tokens() -> int:
+    print()
+    print("=" * 60)
+    print("Stage B · paper.tex 数字 token → truth_skeleton.md")
+    print("=" * 60)
+
+    if not PAPER_TEX.exists():
+        print(f"[SKIP] {PAPER_TEX} 不存在（先写好 paper.tex 再跑 --extract）")
+        return 0
+
+    text = PAPER_TEX.read_text(encoding="utf-8")
+    body = "\n".join(
+        re.sub(r"(?<!\\)%.*$", "", line)
+        for line in text.splitlines()
+    )
+
+    buckets: Dict[str, Set[str]] = {name: set() for name, _ in TOKEN_PATTERNS}
+    for name, pat in TOKEN_PATTERNS:
+        for m in re.finditer(pat, body):
+            tok = m.group(0)
+            if name == "R2_大整数" and YEAR_RE.match(tok):
+                continue
+            buckets[name].add(tok)
+
+    total = sum(len(s) for s in buckets.values())
+    print(f"[stats] 共抽 {total} 个 token（去重后）")
+    for name, _ in TOKEN_PATTERNS:
+        print(f"  - {name}: {len(buckets[name])} 个")
+
+    if total == 0:
+        print("[INFO] paper.tex 没有可抽的数字 token —— 写完正文再跑")
+        return 0
+
+    lines: List[str] = []
+    lines.append("# TRUTH 字典抽取骨架（待人工核证）")
+    lines.append("")
+    lines.append("**严禁直接当真值审计**：这只是 `paper.tex` 抽出的数字 token 列表，")
+    lines.append("每条都要人工核证真值来源（论文 verbatim / 官方统计 / 本地脚本可复现）")
+    lines.append("后并入 `tools/number_audit.py` 的 TRUTH dict。")
+    lines.append("")
+    lines.append("**流程**：")
+    lines.append("")
+    lines.append("1. 审查下方每个 token，决定 KEEP / DROP")
+    lines.append("   - DROP: 年份（已自动排除 1900-2199）/ 版本号 / 引文页码 / 文档结构编号")
+    lines.append("   - KEEP: 数据集规模 / 统计量 / 覆盖率 / 极差 / 词条数 / 算法参数")
+    lines.append("2. KEEP 的项填到 `number_audit.py` TRUTH dict，加 verbatim 真值来源")
+    lines.append("3. 列所有变体（`1,818,649` / `1818649` / `1{,}818{,}649`）")
+    lines.append("4. 跑 `python tools/number_audit.py` 验证")
+    lines.append("")
+    lines.append("**L2 可选**：用 subagent 对齐数据源（cells.csv / result.json）→ SKILL.md")
+    lines.append("§L2 协议。subagent 输出不替代 number_audit 审计，只作 KEEP/DROP 辅助。")
+    lines.append("")
+    for name, _ in TOKEN_PATTERNS:
+        toks = sorted(buckets[name])
+        if not toks:
+            continue
+        lines.append(f"## {name}（{len(toks)} 个）")
+        lines.append("")
+        for tok in toks:
+            lines.append(f"- `{tok}`  → KEEP/DROP? 真值来源 = ?")
+        lines.append("")
+
+    content = "\n".join(lines) + "\n"
+    TRUTH_SKELETON_OUT.write_text(content, encoding="utf-8")
+    print(f"[ OK ] 写入 {TRUTH_SKELETON_OUT}")
+    print(f"  下一步：人工核证每个 token 真值来源 → 复制到 number_audit.py 的 TRUTH dict")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--apply", action="store_true",
+                    help="把探测到的 xelatex/biber 路径写回 compile.ps1（默认 dry-run）")
+    ap.add_argument("--extract", action="store_true",
+                    help="抽 paper.tex 数字 token 生成 truth_skeleton.md")
+    ap.add_argument("--all", action="store_true",
+                    help="等价 --apply --extract")
+    args = ap.parse_args()
+
+    if args.all:
+        args.apply = True
+        args.extract = True
+
+    rc_a = stage_a_detect_paths(apply=args.apply)
+    rc_b = stage_b_extract_tokens() if args.extract else 0
+
+    print()
+    if rc_a == 0 and rc_b == 0:
+        print("[bootstrap] 完成")
+        return 0
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

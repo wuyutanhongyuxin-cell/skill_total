@@ -1,0 +1,195 @@
+"""
+pdf_reverse_verify.py —— PDF 文本流反推验证
+
+selfcheck 通过 ≠ 交付完成。本脚本对 PDF 反推出的纯文本做：
+  (1) 字符级检查（ASCII " / 「」 / "" 平衡）
+  (2) 数字真值命中（复用 number_audit.py 的 TRUTH 字典）
+  (3) chinese-docx-humanize selfcheck.py 7 项 regex 反推
+
+依赖：pdftotext.exe（poppler-utils）在 PATH 里。Windows 可装 MiKTeX 或 Xpdf。
+
+使用：
+  python tools/pdf_reverse_verify.py            # 默认 out/paper.pdf
+  python tools/pdf_reverse_verify.py --pdf <path>
+
+退出码 0 = 全部通过；1 = 有不一致。
+"""
+import re
+import sys
+import shutil
+import subprocess
+import argparse
+import importlib.util
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PDF_DEFAULT = PROJECT_ROOT / "out" / "paper.pdf"
+TXT_DEFAULT = PROJECT_ROOT / "out" / "paper.txt"
+
+# chinese-docx-humanize selfcheck.py 路径（用户机器上）
+DOCX_HUMANIZE_SELFCHECK = Path(r"C:\Users\16191\.claude\skills\chinese-docx-humanize\selfcheck.py")
+
+
+def run_pdftotext(pdf: Path, txt: Path) -> bool:
+    """返回 True 表示 pdftotext 可用且转换成功。"""
+    exe = shutil.which("pdftotext")
+    if not exe:
+        print("[ERROR] pdftotext.exe 不在 PATH 中。")
+        print("  Windows 安装：scoop install poppler  或  choco install xpdf-utils")
+        print("  MiKTeX 用户：pdftotext 应已随 MiKTeX 装上")
+        return False
+    try:
+        subprocess.run(
+            [exe, "-layout", "-enc", "UTF-8", str(pdf), str(txt)],
+            check=True, capture_output=True
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] pdftotext 失败: {e.stderr.decode('utf-8', errors='replace')}")
+        return False
+
+
+def stage1_char_check(text: str) -> int:
+    """字符级核查：ASCII " / 「」 / "" 平衡。返回违规计数。"""
+    print("=" * 60)
+    print("Stage 1 · 字符级反推核查")
+    print("=" * 60)
+
+    fail = 0
+    n_dq = text.count('"')
+    n_kg_open = text.count("「")
+    n_kg_close = text.count("」")
+    n_ldq = text.count("“")
+    n_rdq = text.count("”")
+
+    if n_dq != 0:
+        print(f"[FAIL] ASCII \" 残留: {n_dq} 处（期望 0）")
+        fail += 1
+    else:
+        print("[ OK ] ASCII \" 残留 0")
+
+    if n_kg_open != 0 or n_kg_close != 0:
+        print(f"[FAIL] 「 残留: {n_kg_open}  」 残留: {n_kg_close}")
+        fail += 1
+    else:
+        print("[ OK ] 「」 残留 0")
+
+    if n_ldq != n_rdq:
+        print(f"[FAIL] \" / \" 不平衡: 开 {n_ldq} / 关 {n_rdq}")
+        fail += 1
+    else:
+        print(f"[ OK ] \" / \" 平衡（各 {n_ldq} 处）")
+
+    print()
+    return fail
+
+
+def stage2_number_audit(txt_path: Path) -> int:
+    """复用 number_audit.py 的 TRUTH 反推 PDF 文本。"""
+    print("=" * 60)
+    print("Stage 2 · 数字真值反推 PDF 文本")
+    print("=" * 60)
+
+    audit_py = PROJECT_ROOT / "tools" / "number_audit.py"
+    if not audit_py.exists():
+        print(f"[ERROR] number_audit.py 不存在: {audit_py}")
+        return 1
+
+    # 动态 import TRUTH
+    spec = importlib.util.spec_from_file_location("number_audit", audit_py)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    TRUTH = mod.TRUTH
+
+    if not TRUTH:
+        print("[WARN] TRUTH 字典为空 —— 编辑 number_audit.py 填入真值")
+        return 1
+
+    text = txt_path.read_text(encoding="utf-8")
+
+    missing = []
+    for name, candidates in TRUTH.items():
+        hit = any(c in text for c in candidates)
+        status = "OK" if hit else "MISS"
+        print(f"[{status:4}] {name:35} 候选: {candidates}")
+        if not hit:
+            missing.append(name)
+
+    print()
+    print(f"=== {len(TRUTH) - len(missing)}/{len(TRUTH)} 命中 ===")
+    if missing:
+        print("MISSING:", missing)
+        print("  注：MISS 可能是 pdftotext -layout 把数字跨行了，可改用 -raw 重提")
+        return 1
+    print("[PASS] 数字真值在 PDF 文本流 100% 命中")
+    print()
+    return 0
+
+
+def stage3_docx_humanize_selfcheck(txt_path: Path) -> int:
+    """调 chinese-docx-humanize selfcheck.py 7 项 regex 反推。"""
+    print("=" * 60)
+    print("Stage 3 · chinese-docx-humanize selfcheck.py 反推（7 项 regex）")
+    print("=" * 60)
+
+    if not DOCX_HUMANIZE_SELFCHECK.exists():
+        print(f"[SKIP] {DOCX_HUMANIZE_SELFCHECK} 不存在（跳过此阶段）")
+        return 0
+
+    # selfcheck.py 主要为 docx 设计，对 .txt 输入也兼容（它内部 read 文件）
+    # 这里直接子进程调用
+    result = subprocess.run(
+        [sys.executable, str(DOCX_HUMANIZE_SELFCHECK), str(txt_path)],
+        capture_output=True, text=True
+    )
+    print(result.stdout)
+    if result.stderr:
+        print("[stderr]", result.stderr)
+    return result.returncode
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pdf", type=Path, default=PDF_DEFAULT)
+    ap.add_argument("--txt", type=Path, default=TXT_DEFAULT)
+    ap.add_argument("--skip-docx-humanize", action="store_true",
+                    help="跳过 Stage 3 chinese-docx-humanize selfcheck 反推")
+    args = ap.parse_args()
+
+    if not args.pdf.exists():
+        print(f"[ERROR] PDF 不存在: {args.pdf}")
+        print("  先跑 compile.ps1 生成 PDF")
+        sys.exit(2)
+
+    print(f"[pdf_reverse_verify] PDF: {args.pdf}")
+    print(f"[pdf_reverse_verify] 反推 txt: {args.txt}")
+    print()
+
+    # Stage 0: pdftotext
+    print("=" * 60)
+    print("Stage 0 · pdftotext 反推 PDF 文本流")
+    print("=" * 60)
+    if not run_pdftotext(args.pdf, args.txt):
+        sys.exit(2)
+    print(f"[ OK ] 反推完成: {args.txt} ({args.txt.stat().st_size} bytes)")
+    print()
+
+    text = args.txt.read_text(encoding="utf-8")
+
+    total_fail = 0
+    total_fail += stage1_char_check(text)
+    total_fail += stage2_number_audit(args.txt)
+    if not args.skip_docx_humanize:
+        total_fail += stage3_docx_humanize_selfcheck(args.txt)
+
+    print("=" * 60)
+    if total_fail == 0:
+        print("[PASS] PDF 反推验证全部通过 —— 可交付")
+        sys.exit(0)
+    else:
+        print(f"[FAIL TOTAL] {total_fail} 项不一致 —— 修源 + 重编 + 重推，不修报告")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,90 @@
+# compile.ps1 -- XeLaTeX + biber full compile driver
+# Usage: powershell -ExecutionPolicy Bypass -File <path>\paper\tools\compile.ps1
+#
+# Note: MiKTeX 25.x returns exit code 1 with "major issue: So far, you have not
+# checked for MiKTeX updates" even on successful compilation.
+# We therefore check for .aux/.pdf presence rather than trusting exit code alone.
+#
+# 初始化新项目时必改的 4 个变量：
+#   $Root / $Src / $Out  改成本项目路径
+#   $XeLaTeX / $Biber    改成本机 MiKTeX/TeX Live 的 exe 路径
+#       MiKTeX 默认：C:\Users\<user>\AppData\Local\Programs\MiKTeX\miktex\bin\x64\
+#       TeX Live 默认：C:\texlive\<year>\bin\windows\
+#
+# 编译流程：xelatex(1/4) → biber(2/4) → xelatex(3/4) → xelatex(4/4)
+#   1 次：扫描 \cite{} 写 .aux
+#   biber：读 .aux 写 .bbl
+#   3 次：吃 .bbl 收敛交叉引用
+#   4 次：处理 \ref 解析后的页码漂移
+
+$ErrorActionPreference = "Stop"
+
+# ============================================================
+# 项目路径 —— 改成本项目实际路径
+# ============================================================
+$Root    = 'E:\<your-paper-project>\paper'
+$Src     = "$Root\src"
+$Out     = "$Root\out"
+$Tex     = "$Src\paper.tex"
+
+# ============================================================
+# MiKTeX 路径 —— 改成本机实际位置
+# ============================================================
+$XeLaTeX = 'C:\Users\<user>\AppData\Local\Programs\MiKTeX\miktex\bin\x64\xelatex.exe'
+$Biber   = 'C:\Users\<user>\AppData\Local\Programs\MiKTeX\miktex\bin\x64\biber.exe'
+
+# ============================================================
+
+if (-not (Test-Path $XeLaTeX)) {
+    throw "xelatex.exe 不存在: $XeLaTeX (改 compile.ps1 第 31 行)"
+}
+if (-not (Test-Path $Biber)) {
+    throw "biber.exe 不存在: $Biber (改 compile.ps1 第 32 行)"
+}
+if (-not (Test-Path $Tex)) {
+    throw "paper.tex 不存在: $Tex (改 compile.ps1 第 23 行 \$Src)"
+}
+
+# Ensure out dir exists
+if (-not (Test-Path $Out)) {
+    Write-Host "[setup] Creating out dir: $Out"
+    New-Item -ItemType Directory -Path $Out | Out-Null
+}
+
+function Invoke-XeLaTeX {
+    param([string]$Pass)
+    Write-Host "[$Pass] xelatex..."
+    & $XeLaTeX -interaction=nonstopmode "-output-directory=$Out" $Tex
+    $code = $LASTEXITCODE
+    # MiKTeX may return 1 for "update check" warning even on success; treat as OK
+    # if the .aux was written. Only hard-fail if .aux is missing (real error).
+    $aux = Join-Path $Out 'paper.aux'
+    if ($code -ne 0 -and -not (Test-Path $aux)) {
+        throw "xelatex $Pass failed (exit $code) and no .aux produced"
+    }
+    Write-Host "[$Pass] done (exit $code)"
+}
+
+Push-Location $Src
+try {
+    Invoke-XeLaTeX '1/4'
+
+    Write-Host "[2/4] biber..."
+    & $Biber "--output-directory=$Out" paper
+    $biberCode = $LASTEXITCODE
+    if ($biberCode -ne 0) { throw "biber failed (exit $biberCode)" }
+    Write-Host "[2/4] biber done (exit $biberCode)"
+
+    Invoke-XeLaTeX '3/4'
+    Invoke-XeLaTeX '4/4'
+
+    $pdf = Join-Path $Out 'paper.pdf'
+    if (Test-Path $pdf) {
+        $size = (Get-Item $pdf).Length
+        Write-Host "[DONE] $pdf  ($size bytes)"
+    } else {
+        throw "Compilation finished but paper.pdf not found in $Out"
+    }
+} finally {
+    Pop-Location
+}

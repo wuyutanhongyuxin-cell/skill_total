@@ -1,0 +1,203 @@
+"""
+punct_audit.py —— 标点字符级核查（L-048 防回归）
+
+针对中文 LaTeX 论文的 paper.tex 源做字符级标点审计，对齐 xelatex+ctex+宋体
+渲染时的"肉眼盲区"问题（ASCII " 字形渲染都成关引号、半角逗号在中文段
+应全角化但千分位数字应保留等）。
+
+使用：
+  python tools/punct_audit.py            # 默认扫 src/paper.tex
+  python tools/punct_audit.py --source <path>
+  python tools/punct_audit.py --pdf      # 扫 out/paper.txt（pdftotext 反推后）
+
+退出码 0 = 全部通过；1 = 有违规。
+
+7 项检查（中文段 = `[一-鿿]` 字符前后 1 字符窗口）：
+
+  P1 ASCII 直双引号 " (U+0022) 残留：必 0
+  P2 日文括弧 「 (U+300C) / 」 (U+300D) 残留：必 0（中文应用 "" U+201C/D）
+  P3 中文规范引号 " (U+201C) / " (U+201D) 配对：等量
+  P4 ASCII 单引号 ' (U+0027) 在中文段：必 0（英文缩写 's 等例外）
+  P5 中文段半角逗号 , (U+002C)：必 0（千分位数字 \\d,\\d{3} 白名单豁免）
+  P6 中文段半角分号 ; (U+003B)：必 0
+  P7 中文段半角冒号 : (U+003A)：必 0（URL / \\label{xxx:yyy} / 时间戳例外）
+
+补充诊断（不影响 PASS/FAIL，仅告知）：
+  D1 全角空格 U+3000 在中文段：可能是误粘
+  D2 不间断空格 U+00A0：可能是误粘
+  D3 横线变体（— / – / ─ / -）混用：建议统一为 \\textemdash 或 ——
+"""
+import re
+import sys
+import argparse
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TEX_DEFAULT = PROJECT_ROOT / "src" / "paper.tex"
+TXT_DEFAULT = PROJECT_ROOT / "out" / "paper.txt"
+
+CN_CHAR = r"[一-鿿]"
+LDQ, RDQ = "“", "”"   # " "
+
+# 黑名单 ASCII 标点（含 LaTeX 命令体保护 lookbehind）
+P1_ASCII_DQUOTE = r'(?<!\\)"'   # ASCII " 任何位置（LaTeX 里中文段也不该有，全应换 " "）
+P2_KAGI_OPEN = r"「"
+P2_KAGI_CLOSE = r"」"
+P3_CN_LDQ = LDQ
+P3_CN_RDQ = RDQ
+
+# ASCII ' 在中文段（左前是中文 或 右后是中文）；英文 's / Levene's 等豁免
+# 豁免规则：' 前后都是 [a-zA-Z] 时视为英文缩写
+P4_ASCII_SQUOTE = r"(?:" + CN_CHAR + r"\s*'|'\s*" + CN_CHAR + r")"
+
+# 中文段半角逗号：左是中文且不在千分位数字内 / 右是中文且左不是数字
+P5_HALF_COMMA = r"(?:" + CN_CHAR + r"\s*,(?!\d{3}(?:\D|$))|(?<!\d)\s*,\s*" + CN_CHAR + r")"
+
+P6_HALF_SEMI = r"(?:" + CN_CHAR + r"\s*;|;\s*" + CN_CHAR + r")"
+
+# 中文段半角冒号：左是中文且右不是字母数字（URL/label 例外）
+P7_HALF_COLON = r"(?:" + CN_CHAR + r"\s*:(?![A-Za-z0-9/])|(?<![A-Za-z0-9/])\s*:\s*" + CN_CHAR + r")"
+
+# 诊断
+D1_FULLWIDTH_SPACE = r"　"
+D2_NBSP = r" "
+
+
+def line_of(text: str, pos: int) -> int:
+    return text[:pos].count("\n") + 1
+
+
+def snippet_of(text: str, start: int, end: int, ctx: int = 15) -> str:
+    return text[max(0, start - ctx):end + ctx].replace("\n", " ")
+
+
+def scan(text: str, pat: str, name: str, flags: int = 0):
+    matches = list(re.finditer(pat, text, flags))
+    return matches
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--pdf", action="store_true",
+                    help="扫 out/paper.txt（pdftotext 反推后）")
+    ap.add_argument("--source", type=Path, default=None)
+    args = ap.parse_args()
+
+    if args.source:
+        src = args.source
+    elif args.pdf:
+        src = TXT_DEFAULT
+    else:
+        src = TEX_DEFAULT
+
+    if not src.exists():
+        print(f"[ERROR] 源文件不存在: {src}")
+        sys.exit(2)
+
+    text = src.read_text(encoding="utf-8")
+
+    if src.suffix == ".tex":
+        body = "\n".join(
+            re.sub(r"(?<!\\)%.*$", "", line)
+            for line in text.splitlines()
+        )
+    else:
+        body = text
+
+    print(f"[punct_audit] 源: {src}")
+    print(f"[size] {len(body)} chars")
+    print()
+
+    fail = 0
+
+    # P1 ASCII "
+    n_dq = body.count('"')
+    if n_dq > 0:
+        print(f"[FAIL] P1 ASCII \" 残留: {n_dq} 处")
+        # 示例
+        for m in re.finditer(r'"', body):
+            print(f"    L{line_of(body, m.start())}: ...{snippet_of(body, m.start(), m.end())}...")
+            break
+        fail += 1
+    else:
+        print("[ OK ] P1 ASCII \" 残留 0")
+
+    # P2 「」
+    n_kg_open = body.count("「")
+    n_kg_close = body.count("」")
+    if n_kg_open or n_kg_close:
+        print(f"[FAIL] P2 「 残留: {n_kg_open} / 」 残留: {n_kg_close}")
+        fail += 1
+    else:
+        print("[ OK ] P2 「」 残留 0")
+
+    # P3 "" 配对
+    n_ldq = body.count(LDQ)
+    n_rdq = body.count(RDQ)
+    if n_ldq != n_rdq:
+        print(f"[FAIL] P3 \" / \" 不平衡: 开 {n_ldq} / 关 {n_rdq}")
+        fail += 1
+    else:
+        print(f"[ OK ] P3 \" / \" 平衡（各 {n_ldq} 处）")
+
+    # P4 ASCII '（中文段）
+    p4_matches = scan(body, P4_ASCII_SQUOTE, "P4")
+    if p4_matches:
+        print(f"[FAIL] P4 ASCII ' 在中文段: {len(p4_matches)} 处")
+        for m in p4_matches[:3]:
+            print(f"    L{line_of(body, m.start())}: ...{snippet_of(body, m.start(), m.end())}...")
+        fail += 1
+    else:
+        print("[ OK ] P4 ASCII ' 在中文段 0")
+
+    # P5 半角逗号（中文段，排除千分位）
+    p5_matches = scan(body, P5_HALF_COMMA, "P5")
+    if p5_matches:
+        print(f"[FAIL] P5 中文段半角逗号: {len(p5_matches)} 处")
+        for m in p5_matches[:5]:
+            print(f"    L{line_of(body, m.start())}: ...{snippet_of(body, m.start(), m.end())}...")
+        fail += 1
+    else:
+        print("[ OK ] P5 中文段半角逗号 0（千分位已豁免）")
+
+    # P6 半角分号（中文段）
+    p6_matches = scan(body, P6_HALF_SEMI, "P6")
+    if p6_matches:
+        print(f"[FAIL] P6 中文段半角分号: {len(p6_matches)} 处")
+        for m in p6_matches[:3]:
+            print(f"    L{line_of(body, m.start())}: ...{snippet_of(body, m.start(), m.end())}...")
+        fail += 1
+    else:
+        print("[ OK ] P6 中文段半角分号 0")
+
+    # P7 半角冒号（中文段，排除 URL/label）
+    p7_matches = scan(body, P7_HALF_COLON, "P7")
+    if p7_matches:
+        print(f"[FAIL] P7 中文段半角冒号: {len(p7_matches)} 处")
+        for m in p7_matches[:3]:
+            print(f"    L{line_of(body, m.start())}: ...{snippet_of(body, m.start(), m.end())}...")
+        fail += 1
+    else:
+        print("[ OK ] P7 中文段半角冒号 0（URL/label 已豁免）")
+
+    print()
+
+    # 诊断 D1 / D2 （非 fail，只告知）
+    n_fws = body.count("　")
+    n_nbsp = body.count(" ")
+    if n_fws:
+        print(f"[INFO] D1 全角空格 U+3000: {n_fws} 处（可能是误粘，检查是否应为半角空格）")
+    if n_nbsp:
+        print(f"[INFO] D2 不间断空格 U+00A0: {n_nbsp} 处（可能是误粘）")
+
+    print()
+    if fail == 0:
+        print("[PASS] 标点字符级核查全部通过")
+        sys.exit(0)
+    else:
+        print(f"[FAIL TOTAL] {fail} 项需修订")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

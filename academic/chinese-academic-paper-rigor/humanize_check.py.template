@@ -1,0 +1,89 @@
+"""
+humanize_check.py —— 7 项 LaTeX 源 selfcheck
+
+基于 chinese-docx-humanize skill 的 24 规则中可机械化扫描的 7 项，
+针对中文 LaTeX 论文的 paper.tex 源做扫描。
+
+使用：
+  python tools/humanize_check.py            # 默认扫 src/paper.tex
+  python tools/humanize_check.py --source <path>
+
+退出码 0 = 全部 OK；1 = 有命中。
+
+7 项规则覆盖：
+  R1 LLM 痕迹：agent / LLM / AI / 大模型 / 生成式 / chatgpt / claude / gemini / gpt-
+  R2 AI 高频中文词：本文 / 本研究 / 至关重要 / 旨在 / 推动 / 综上所述 / 不仅...而且 / 核心要义 / 赋能 / 破局
+  R3 AI 高频英文词：delve / pivotal / unlock / facilitate / leveraging / robust（非"鲁棒"语境）
+  R4 emoji 与符号装饰：emoji 区块 / === / --- / 箭头 → ⇒ ← ⇐
+  R5 半角括号含中文：(说话) / (N=100 受试者)（应改全角）— 纯英文/数字 (PsychoPy) (N=100) 保留半角
+  R6 千分位被误全角化：1，818，649（应保留半角 1,818,649）
+  R7 章节标号 + 中文：单行 "1.1 章节名" 模式（应用 \\section 等命令）
+
+注：R5 用 (?<!\\}) 排除 LaTeX `\textsubscript{10}(说明)` 等数学注解里的合法半角括号。
+"""
+import re
+import sys
+import argparse
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+TEX_DEFAULT = PROJECT_ROOT / "src" / "paper.tex"
+
+RULES = {
+    "R1_LLM痕迹": r"agent|LLM|AI|大模型|生成式|chatgpt|claude|gemini|gpt-",
+    "R2_AI高频词": r"本文|本研究|至关重要|旨在|推动|综上所述|总而言之|不仅.{0,8}而且|核心要义|赋能|破局",
+    "R3_英文高频词": r"\bdelve\b|\bpivotal\b|\bunlock\b|\bfacilitate\b|\bleveraging\b|\brobust\b(?! 性)",
+    "R4_emoji与符号装饰": r"[✀-⟿\U0001f300-\U0001faff]|===+|---+(?!\s|$)|→|⇒|←|⇐",
+    "R5_半角括号": r"(?<!\})\([^()]*[一-鿿]+[^()]*\)",
+    "R6_千分位被全角化": r"\d，\d{3}",
+    "R7_章节标号双角": r"^\s*\d+\.\d+\s+[一-鿿]",
+}
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--source", type=Path, default=TEX_DEFAULT)
+    args = ap.parse_args()
+
+    src = args.source
+    if not src.exists():
+        print(f"[ERROR] 源文件不存在: {src}")
+        sys.exit(2)
+
+    text = src.read_text(encoding="utf-8")
+    body = "\n".join(
+        re.sub(r"(?<!\\)%.*$", "", line)
+        for line in text.splitlines()
+    )
+
+    print(f"[humanize_check] {src}")
+    print(f"[size] {len(body)} chars (正文，已去注释)")
+    print()
+
+    total_hits = 0
+    for name, pat in RULES.items():
+        flags = re.MULTILINE if name == "R7_章节标号双角" else 0
+        matches = list(re.finditer(pat, body, flags))
+        if matches:
+            print(f"[FAIL] {name}: {len(matches)} 处")
+            for m in matches[:5]:
+                line_no = body[:m.start()].count("\n") + 1
+                snippet = body[max(0, m.start() - 15):m.end() + 15].replace("\n", " ")
+                print(f"    L{line_no}: ...{snippet}...")
+            if len(matches) > 5:
+                print(f"    ... 另 {len(matches) - 5} 处")
+            total_hits += len(matches)
+        else:
+            print(f"[ OK ] {name}")
+
+    print()
+    if total_hits == 0:
+        print("[PASS] 全部 7 项 OK")
+        sys.exit(0)
+    else:
+        print(f"[FAIL TOTAL] {total_hits} 处需修订")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
